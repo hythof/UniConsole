@@ -8,7 +8,6 @@ using UnityEditor;
 [ExecuteInEditMode()]
 public class UniConsoleEditor : EditorWindow
 {
-    bool isInit = false;
     Stopwatch delayWatch = new Stopwatch();
     System.Action delayAction = () => {};
     Logger logger = new Logger();
@@ -25,15 +24,6 @@ public class UniConsoleEditor : EditorWindow
         if (Application.isPlaying)
         {
             Application.RegisterLogCallback(addLog);
-            if(!isInit)
-            {
-                isInit = true;
-                logger.Clear();
-            }
-        }
-        else
-        {
-            isInit = false;
         }
 
         try
@@ -42,15 +32,15 @@ public class UniConsoleEditor : EditorWindow
             switch (action)
             {
                 case UniConsoleAction.LogClear:
-                    logger.Clear();
+                    logger.Clear(false);
                     break;
                 case UniConsoleAction.LogFilter:
                     delayWatch = Stopwatch.StartNew();
-                    delayAction = () => logger.Filter(render.Word);
+                    delayAction = () => logger.Filter(render.Word, render.Level);
                     break;
             }
 
-            if(delayWatch.ElapsedMilliseconds >= 1000)
+            if(delayWatch.ElapsedMilliseconds >= 300)
             {
                 delayWatch.Reset();
                 delayAction();
@@ -62,7 +52,7 @@ public class UniConsoleEditor : EditorWindow
             EditorGUILayout.SelectableLabel(ex.Message + "\n" + ex.StackTrace);
         }
 
-        this.title = "UniConsole" + logger.Count();
+        this.title = "UniCon " + logger.Count();
     }
 
     void Update()
@@ -102,19 +92,25 @@ enum UniConsoleAction {
 class Render
 {
     public string Word = string.Empty;
+    public int Level = 0;
     Vector2 scroll = Vector2.zero;
     GUIStyle logEvenHorizontalStyle;
     GUIStyle fileOddHorizontalStyle;
     GUIStyle fileEvenHorizontalStyle;
     GUIStyle selectHorizontalStyle;
     GUIStyle labelButtonStyle;
+    GUIStyle labelButtonStyleOverFlow;
+    GUIStyle buttonStyle;
     bool isInit = false;
-    bool isShowLevel = false;
+    bool isShowLevel = true;
     bool isShowTime = false;
     bool isShowScene = false;
     bool isShowFile = false;
     bool isShowMethod = false;
-    int logSelectedIndex = -1;
+    bool isShowDebug = true;
+    bool isShowWarn = true;
+    bool isShowError = true;
+    int logSelectedId = -1;
     int fileSelectedIndex = -1;
     UniConsoleAction action = UniConsoleAction.Noop;
     Log current;
@@ -135,10 +131,20 @@ class Render
         {
             logEvenHorizontalStyle = scrollStyle(0.28f, 0.28f, 0.28f);
             selectHorizontalStyle = scrollStyle(0.3f, 0.4f, 0.8f);
-            fileEvenHorizontalStyle = scrollStyle(0.33f, 0.33f, 0.33f);
-            fileOddHorizontalStyle = scrollStyle(0.38f, 0.38f, 0.38f);
+            fileEvenHorizontalStyle = scrollStyle(0.25f, 0.25f, 0.25f);
+            fileOddHorizontalStyle = scrollStyle(0.35f, 0.35f, 0.35f);
             labelButtonStyle = new GUIStyle(GUI.skin.label);
             labelButtonStyle.richText = true;
+            labelButtonStyle.stretchWidth = false;
+            labelButtonStyle.stretchHeight = false;
+            labelButtonStyle.wordWrap = true;
+            labelButtonStyle.clipping = TextClipping.Clip;
+            labelButtonStyle.padding = new RectOffset(0, 0, 3, 4);
+            labelButtonStyleOverFlow = new GUIStyle(labelButtonStyle);
+            labelButtonStyleOverFlow.fixedHeight = labelButtonStyleOverFlow.lineHeight * 2.5f;
+            buttonStyle = new GUIStyle(GUI.skin.button);
+            buttonStyle.margin = new RectOffset(5, 0, 3, 0);
+            buttonStyle.padding = new RectOffset(5, 5, 0, 0);
             isInit = true;
         }
         action = UniConsoleAction.Noop;
@@ -156,57 +162,79 @@ class Render
 
     void showSearch()
     {
-        GUILayout.BeginHorizontal();
         var word = GUILayout.TextField(Word);
         if(word != Word)
         {
             Word = word;
             action = UniConsoleAction.LogFilter;
         }
-		if(GUILayout.Button("Clear", GUILayout.Width(60)))
-        {
-            action = UniConsoleAction.LogClear;
-        }
-        GUILayout.EndHorizontal();
     }
     
     void showOption()
     {
         GUILayout.BeginHorizontal();
+        if (GUILayout.Button("Clear", GUILayout.Width(60), GUILayout.Height(14)))
+        {
+            action = UniConsoleAction.LogClear;
+        }
+        isShowDebug = GUILayout.Toggle(isShowDebug, "DEBUG", GUILayout.Width(60));
+        isShowWarn = GUILayout.Toggle(isShowWarn, "WARN", GUILayout.Width(60));
+        isShowError = GUILayout.Toggle(isShowError, "ERROR", GUILayout.Width(60));
+        int level = (isShowDebug ? 1 : 0)
+            + (isShowWarn ? 1 << 1 : 0)
+            + (isShowError ? 1 << 2 : 0);
+        if(level != Level)
+        {
+            Level = level;
+            action = UniConsoleAction.LogFilter;
+        }
+        GUILayout.EndHorizontal();
+
+        GUILayout.BeginHorizontal();
         isShowLevel = GUILayout.Toggle(isShowLevel, "Level", GUILayout.Width(50));
-        isShowScene = GUILayout.Toggle(isShowScene, "Scene", GUILayout.Width(50));
-        isShowTime = GUILayout.Toggle(isShowTime, "Time", GUILayout.Width(45));
-        isShowFile = GUILayout.Toggle(isShowFile, "File", GUILayout.Width(35));
-        isShowMethod = GUILayout.Toggle(isShowMethod, "Method", GUILayout.Width(60));
+        isShowScene = GUILayout.Toggle(isShowScene, "Scene", GUILayout.Width(60));
+        isShowTime = GUILayout.Toggle(isShowTime, "Time", GUILayout.Width(55));
+        isShowFile = GUILayout.Toggle(isShowFile, "File", GUILayout.Width(45));
+        isShowMethod = GUILayout.Toggle(isShowMethod, "Method", GUILayout.Width(70));
         GUILayout.EndHorizontal();
     }
 
     void showTable(Rect pos, List<Log> logs)
     {
+        int w0 = 16;
         int w1 = 0;
         int w2 = 0;
         int w3 = 0;
         int w4 = 0;
         foreach (var log in logs) {
-            int x1 = (int)GUI.skin.label.CalcSize(new GUIContent(log.Time)).x;
-            int x2 = (int)GUI.skin.label.CalcSize(new GUIContent(log.Scene)).x;
-            int x3 = (int)GUI.skin.label.CalcSize(new GUIContent(log.FileLine)).x;
-            int x4 = (int)GUI.skin.label.CalcSize(new GUIContent(log.Method)).x;
+            log.GUIInit();
+            int x1 = log.GUIWidthTime;
+            int x2 = log.GUIWidthScene;
+            int x3 = log.GUIWidthFileLine;
+            int x4 = log.GUIWidthMethod;
             w1 = w1 < x1 ? x1 : w1;
             w2 = w2 < x2 ? x2 : w2;
             w3 = w3 < x3 ? x3 : w3;
             w4 = w4 < x4 ? x4 : w4;
         }
+        int w5 = (int)(pos.width
+            - (isShowLevel ? w0 : 0)
+            - (isShowTime ? w1 : 0)
+            - (isShowScene ? w2 : 0)
+            - (isShowFile ? w3 : 0)
+            - (isShowMethod ? w4 : 0));
         scroll = GUILayout.BeginScrollView(scroll);
         var regex = new Regex(Word,
                 RegexOptions.Compiled |
                 RegexOptions.IgnoreCase);
         current = Log.Empty;
-        var ws0 = GUILayout.Width(16);
+        var ws0 = GUILayout.Width(w0);
         var ws1 = GUILayout.Width(w1);
         var ws2 = GUILayout.Width(w2);
         var ws3 = GUILayout.Width(w3);
         var ws4 = GUILayout.Width(w4);
+        var ws5 = GUILayout.Width(w5);
+
         for (int i=0; i<logs.Count; ++i)
         {
             var log = logs[i];
@@ -219,8 +247,8 @@ class Render
             var method = string.IsNullOrEmpty(Word) || !isShowMethod
                 ? log.Method
                 : regex.Replace(log.Method, "<color=#ffff33>$&</color>");
-
-            if (i == logSelectedIndex)
+            var isCurrent = log.ID == logSelectedId;
+            if (isCurrent)
             {
                 current = log;
                 GUILayout.BeginHorizontal(selectHorizontalStyle);
@@ -231,26 +259,26 @@ class Render
             }
             else
             {
-                GUILayout.BeginHorizontal();
+                GUILayout.BeginHorizontal(fileOddHorizontalStyle);
             }
 
             if(isShowLevel)
             {
-                GUILayout.Label(log.LevelWord, ws0);
+                GUILayout.Label(log.LevelWord, labelButtonStyle, ws0);
             }
             if(isShowTime)
             {
-                GUILayout.Label(log.Time, ws1);
+                GUILayout.Label(log.Time, labelButtonStyle, ws1);
             }
             if(isShowScene)
             {
-                GUILayout.Label(log.Scene, ws2);
+                GUILayout.Label(log.Scene, labelButtonStyle, ws2);
             }
             if(isShowFile)
             {
                 if(GUILayout.Button(file, labelButtonStyle, ws3))
                 {
-                    logSelectedIndex = i;
+                    logSelectedId = log.ID;
                     fileSelectedIndex = -1;
                 }
             }
@@ -258,22 +286,30 @@ class Render
             {
                 if(GUILayout.Button(method, labelButtonStyle, ws4))
                 {
-                    logSelectedIndex = i;
+                    logSelectedId = log.ID;
                     fileSelectedIndex = -1;
                 }
             }
-            if(GUILayout.Button(msg, labelButtonStyle))
+
+            var msgStyle = GUI.skin.label.CalcHeight(new GUIContent(msg), w5) > labelButtonStyle.lineHeight * 3
+                ? labelButtonStyleOverFlow
+                : labelButtonStyle;
+            if(GUILayout.Button(msg, msgStyle, ws5))
             {
-                logSelectedIndex = i;
+                logSelectedId = log.ID;
                 fileSelectedIndex = -1;
             }
 
             GUILayout.EndHorizontal();
+
+            if(isCurrent)
+            {
+                showSplit();
+                showStack();
+                showSplit();
+            }
         }
         GUILayout.EndScrollView();
-
-        showSplit();
-        showStack();
     }
 
     void showStack()
@@ -290,9 +326,9 @@ class Render
             w1 = w1 < x1 ? x1 : w1;
         }
 
-        var ws0 = GUILayout.Width(50);
+        var ws0 = GUILayout.Width(40);
         var ws1 = GUILayout.Width(w1);
-        for(int i=0; i<current.Stacks.Count; ++i)
+        for (int i=0; i<current.Stacks.Count; ++i)
         {
             var stack = current.Stacks[i];
             if(fileSelectedIndex == i)
@@ -308,25 +344,35 @@ class Render
                 GUILayout.BeginHorizontal(fileOddHorizontalStyle);
             }
 
-            GUILayout.Space(10);
-            if (
-                GUILayout.Button(stack.FileLine, labelButtonStyle, ws1) |
-                GUILayout.Button(stack.LineCode(), labelButtonStyle)
-            )
+            if (GUILayout.Button("open", buttonStyle, ws0))
             {
-                UnityEngine.Object _asset = AssetDatabase.LoadAssetAtPath(stack.Path, typeof(Object)) as Object;
-                AssetDatabase.OpenAsset(_asset, stack.Line);
+                openFile(stack.Path, stack.Line);
+                fileSelectedIndex = i;
+            }
+            if(GUILayout.Button(stack.FileLine, labelButtonStyle, ws1) | 
+               GUILayout.Button(stack.LineCode(), labelButtonStyle))
+            {
+                if(fileSelectedIndex == i)
+                {
+                    openFile(stack.Path, stack.Line);
+                }
                 fileSelectedIndex = i;
             }
             GUILayout.EndHorizontal();
         }
+    }
+
+    void openFile(string path, int line)
+    {
+        UnityEngine.Object _asset = AssetDatabase.LoadAssetAtPath(path, typeof(Object)) as Object;
+        AssetDatabase.OpenAsset(_asset, line);
     }
 }
 
 class Logger
 {
     const int LogLimit = 10 * 1000;
-    const int ShowLogLimit = 300;
+    const int ShowLogLimit = 100;
     readonly static Stopwatch stopwatch = Stopwatch.StartNew();
     readonly static List<Log> all = new List<Log>();
     readonly static List<Log> filtered = new List<Log>();
@@ -366,18 +412,22 @@ class Logger
         return filtered.Count;
     }
 
-    public void Clear()
+    public void Clear(bool clearFilterRegex)
     {
         stopwatch.Reset();
         stopwatch.Start();
         all.Clear();
         filtered.Clear();
-        filterRegex = null;
+        if(clearFilterRegex)
+        {
+            filterRegex = null;
+        }
     }
 
-    public void Filter(string word)
+    public void Filter(string word, int level)
     {
         filtered.Clear();
+        filterLevel = level;
 
         if (string.IsNullOrEmpty(word))
         {
@@ -415,11 +465,13 @@ class Logger
 struct Log
 {
     public static readonly Log Empty = new Log(0, 0, string.Empty, string.Empty, string.Empty);
+    static int id;
     const string none = "(-)";
     public const int Debug = 1;
     public const int Warn = 1 << 1;
     public const int Error = 1 << 2;
     public const int All = Debug + Warn + Error;
+    public readonly int ID;
     public readonly int Level;
     public readonly string Time;
     public readonly string Scene;
@@ -429,12 +481,18 @@ struct Log
     public readonly string Method;
     public readonly string Stack;
     public readonly List<StackLine> Stacks;
+    public int GUIWidthTime;
+    public int GUIWidthScene;
+    public int GUIWidthFileLine;
+    public int GUIWidthMethod;
+    bool isGUIInit;
 
     public Log(int level, int time, string scene, string message, string stack)
     {
+        ID = ++id;
         Time = string.Format("{0:#,0}ms", time);
         Scene = scene;
-        LevelWord = level == Debug ? "D" : level == Warn ? "W" : "E";
+        LevelWord = level == Debug ? "D" : level == Warn ? "<color=#ffcc66>W</color>" : "<color=#ff9999>E</color>";
         Level = level;
         Message = message;
         Stack = stack;
@@ -466,6 +524,25 @@ struct Log
             Method = none;
             FileLine = none;
         }
+
+        isGUIInit = false;
+        GUIWidthTime = 0;
+        GUIWidthScene = 0;
+        GUIWidthFileLine = 0;
+        GUIWidthMethod = 0;
+    }
+
+    public void GUIInit()
+    {
+        if(isGUIInit)
+        {
+            return;
+        }
+        isGUIInit = true;
+        GUIWidthTime = (int)GUI.skin.label.CalcSize(new GUIContent(Time)).x;
+        GUIWidthScene = (int)GUI.skin.label.CalcSize(new GUIContent(Scene)).x;
+        GUIWidthFileLine = (int)GUI.skin.label.CalcSize(new GUIContent(FileLine)).x;
+        GUIWidthMethod = (int)GUI.skin.label.CalcSize(new GUIContent(Method)).x;
     }
 
     public bool IsMatch(Regex r)
@@ -474,7 +551,7 @@ struct Log
     }
 }
 
-struct StackLine
+class StackLine
 {
     public readonly string FileLine;
     public readonly string File;
@@ -482,6 +559,7 @@ struct StackLine
     public readonly int Line;
     public readonly string Method;
     string lineCode;
+    bool loadFile;
 
     public StackLine(string file, string method)
     {
@@ -504,12 +582,14 @@ struct StackLine
         Method = method;
         lineCode = string.Empty;
         FileLine = File + ":" + Line ;
+        loadFile = false;
     }
 
     public string LineCode()
     {
-        if (string.IsNullOrEmpty(lineCode))
+        if (!loadFile)
         {
+            loadFile = true;
             try
             {
                 var code = AssetDatabase.LoadAssetAtPath(Path, typeof(TextAsset)) as TextAsset;
